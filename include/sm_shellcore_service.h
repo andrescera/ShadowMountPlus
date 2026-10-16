@@ -24,13 +24,15 @@ int sm_shellcore_unmount_title_runtime(const char *title_id);
 void sm_shellcore_service_bind_prepared_app(const char *title_id,
                                             uint32_t app_id, pid_t pid);
 // Publish process exit while ShellCore still owns the title sandbox and copy
-// the matching owned title to title_id_out.
+// the matching owned title to title_id_out. exit_time_us is the monotonic time
+// the process exited (0 = now); it starts the sandbox linger timeout.
 // Returns true when an owned incoming/outgoing title became exit-pending.
-bool sm_shellcore_service_note_game_exit(pid_t pid,
+bool sm_shellcore_service_note_game_exit(pid_t pid, uint64_t exit_time_us,
                                          char title_id_out[MAX_TITLE_ID]);
 // Release exit-pending runtime stacks whose /mnt/sandbox/<TITLE_ID>_* entries
-// have all disappeared. Returns 0 when no exit-pending runtime remains, EAGAIN
-// while a sandbox remains, or another positive errno after a release failure.
+// have all disappeared or have outlived GAME_EXIT_SANDBOX_LINGER_US. Returns 0
+// when no exit-pending runtime remains, EAGAIN while a sandbox remains, or
+// another positive errno after a release failure.
 int sm_shellcore_service_release_exited_titles(void);
 // Return true while ShellCore still exposes a sandbox for the title.
 bool sm_shellcore_service_title_sandbox_exists(const char *title_id);

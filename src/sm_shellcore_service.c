@@ -12,6 +12,7 @@
 #include "sm_image.h"
 #include "sm_limits.h"
 #include "sm_log.h"
+#include "sm_time.h"
 #include "sm_path_utils.h"
 #include "sm_pkg_backport.h"
 #include "sm_runtime.h"
@@ -40,6 +41,7 @@ typedef struct {
   pid_t pid;
   bool game_exited;
   bool sandbox_ready_handled;
+  uint64_t exit_time_us;
 } shellcore_mount_owner_t;
 
 typedef struct {
@@ -658,7 +660,7 @@ void sm_shellcore_service_bind_prepared_app(const char *title_id,
   pthread_mutex_unlock(&g_service.mutex);
 }
 
-bool sm_shellcore_service_note_game_exit(pid_t pid,
+bool sm_shellcore_service_note_game_exit(pid_t pid, uint64_t exit_time_us,
                                          char title_id_out[MAX_TITLE_ID]) {
   if (title_id_out)
     title_id_out[0] = '\0';
@@ -674,6 +676,8 @@ bool sm_shellcore_service_note_game_exit(pid_t pid,
     owner = &g_service.prepared;
   if (owner && !owner->game_exited) {
     owner->game_exited = true;
+    owner->exit_time_us =
+        exit_time_us != 0 ? exit_time_us : monotonic_time_us();
     if (title_id_out)
       (void)strlcpy(title_id_out, owner->title_id, MAX_TITLE_ID);
     changed = true;
@@ -721,11 +725,13 @@ bool sm_shellcore_service_title_sandbox_exists(const char *title_id) {
 
 int sm_shellcore_service_release_exited_titles(void) {
   char exited_titles[2][MAX_TITLE_ID] = {{0}};
+  uint64_t exited_since_us[2] = {0};
   size_t exited_count = 0;
 
   pthread_mutex_lock(&g_service.mutex);
   if (g_service.outgoing.title_id[0] != '\0' &&
       g_service.outgoing.game_exited) {
+    exited_since_us[exited_count] = g_service.outgoing.exit_time_us;
     (void)strlcpy(exited_titles[exited_count++],
                   g_service.outgoing.title_id, MAX_TITLE_ID);
   }
@@ -733,6 +739,7 @@ int sm_shellcore_service_release_exited_titles(void) {
       g_service.prepared.game_exited &&
       (exited_count == 0 ||
        strcmp(exited_titles[0], g_service.prepared.title_id) != 0)) {
+    exited_since_us[exited_count] = g_service.prepared.exit_time_us;
     (void)strlcpy(exited_titles[exited_count++],
                   g_service.prepared.title_id, MAX_TITLE_ID);
   }
@@ -742,13 +749,22 @@ int sm_shellcore_service_release_exited_titles(void) {
   int release_error = 0;
   for (size_t i = 0; i < exited_count; ++i) {
     const char *title_id = exited_titles[i];
-    if (sm_shellcore_service_title_sandbox_exists(title_id)) {
-      waiting = true;
-      continue;
+    bool sandbox_lingers = sm_shellcore_service_title_sandbox_exists(title_id);
+    if (sandbox_lingers) {
+      uint64_t now_us = monotonic_time_us();
+      if (exited_since_us[i] == 0 || now_us == 0 ||
+          now_us - exited_since_us[i] < GAME_EXIT_SANDBOX_LINGER_US) {
+        waiting = true;
+        continue;
+      }
+      log_debug("  [SHELLCORE] title sandbox still present %llus after exit; "
+                "releasing runtime anyway: %s",
+                (unsigned long long)((now_us - exited_since_us[i]) / 1000000u),
+                title_id);
+    } else {
+      log_debug("  [SHELLCORE] title sandbox gone; releasing runtime: %s",
+                title_id);
     }
-
-    log_debug("  [SHELLCORE] title sandbox gone; releasing runtime: %s",
-              title_id);
     if (!release_title_runtime(title_id, false)) {
       release_error = errno != 0 ? errno : EIO;
       log_debug("  [SHELLCORE] sandbox-triggered release incomplete; scanner "

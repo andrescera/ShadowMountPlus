@@ -636,6 +636,13 @@ static const struct timespec *compute_game_wait_timeout(
       next_wake_us,
       next_pending_exit_wake_us(now_us, sandbox_watch_active));
   next_wake_us = min_nonzero_u64(next_wake_us, sm_mdbg_next_wake_us());
+  // An exited title keeps its prepared runtime until the sandbox is gone or the
+  // linger timeout expires; nothing else wakes this thread to re-check that.
+  if (!g_pending_game_exit.active && atomic_load(&g_active_game_pid) <= 0 &&
+      sm_shellcore_service_has_prepared_mount() && now_us != 0) {
+    next_wake_us = min_nonzero_u64(
+        next_wake_us, now_us + GAME_PROCESS_HANDOFF_FALLBACK_POLL_US);
+  }
   if (next_wake_us == 0)
     return NULL;
 
@@ -744,11 +751,12 @@ static void handle_game_exec(int kq, pid_t pid) {
     queue_pending_game_launch(pid, now_us, now_us);
 }
 
-static void finalize_game_exit(pid_t pid, const char *fallback_title_id) {
+static void finalize_game_exit(pid_t pid, uint64_t exit_time_us,
+                               const char *fallback_title_id) {
   sm_mdbg_game_on_exit(pid);
   char owned_title_id[MAX_TITLE_ID] = {0};
   bool owned_exit =
-      sm_shellcore_service_note_game_exit(pid, owned_title_id);
+      sm_shellcore_service_note_game_exit(pid, exit_time_us, owned_title_id);
   sm_pkg_backport_on_exit(pid);
   sm_fakelib_game_on_exit(pid);
   if (owned_exit) {
@@ -774,7 +782,7 @@ static void finalize_pending_game_exit(void) {
   memset(&g_pending_game_exit, 0, sizeof(g_pending_game_exit));
   log_debug("  [GAME] finalizing stopped application: %s pid=%ld",
             exited.title_id, (long)exited.pid);
-  finalize_game_exit(exited.pid, exited.title_id);
+  finalize_game_exit(exited.pid, exited.exit_time_us, exited.title_id);
   // Keep the public active state asserted until all per-game cleanup has
   // completed, then publish the single logical active -> inactive transition.
   publish_game_exit_handoff_pending(false);
@@ -803,7 +811,20 @@ static void maybe_finalize_pending_game_exit(void) {
   // transition while the replacement process is being published.
   if (sm_shellcore_service_title_sandbox_exists(
           g_pending_game_exit.title_id)) {
-    return;
+    // ShellCore may leave the sandbox behind after a real exit, so the wait
+    // is bounded instead of relying on its removal.
+    uint64_t linger_now_us = monotonic_time_us();
+    if (linger_now_us == 0 || g_pending_game_exit.exit_time_us == 0 ||
+        linger_now_us - g_pending_game_exit.exit_time_us <
+            GAME_EXIT_SANDBOX_LINGER_US) {
+      return;
+    }
+    log_debug("  [GAME] title sandbox still present %llus after exit; "
+              "finalizing stopped application anyway: %s",
+              (unsigned long long)((linger_now_us -
+                                    g_pending_game_exit.exit_time_us) /
+                                   1000000u),
+              g_pending_game_exit.title_id);
   }
 
   uint64_t now_us = monotonic_time_us();
@@ -853,7 +874,7 @@ static void handle_game_exit(pid_t pid) {
 
   // Non-active exits (for example an outgoing title during a normal game
   // switch) retain the existing immediate per-process cleanup behavior.
-  finalize_game_exit(pid, NULL);
+  finalize_game_exit(pid, 0, NULL);
 }
 
 static bool terminate_game_for_sleep(int kq, pid_t pid, const char *title_id,
