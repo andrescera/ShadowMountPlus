@@ -20,11 +20,13 @@ bool sm_fakelib_game_on_sandbox_ready(const char *title_id);
 void sm_fakelib_game_on_usb_mount_change(const char *source_path, bool mounted);
 // Reconcile USB, extended storage and disc aliases after filesystem events.
 void sm_fakelib_game_refresh_storage(void);
-// Detach only owned sandbox /mnt/usbN aliases for sleep; reconcile USB aliases
-// on resume. Other layers and borrowed mounts retain their lifetime/ownership.
+// Detach owned sandbox USB, extended-storage and disc aliases for sleep and
+// reconcile them on resume. The call is rejected when the session belongs to
+// another title or PID. Other layers and borrowed mounts keep their ownership.
 // Failed aliases or an incomplete retained session return false so USB source
 // cleanup can be skipped. Stale sleep phases and shutdown requests are rejected.
-bool sm_fakelib_game_set_usb_suspended(bool suspended);
+bool sm_fakelib_game_set_storage_suspended(bool suspended, pid_t pid,
+                                           const char *title_id);
 // Roll back unbound pre-spawn mounts when ShellCore rejects the launch.
 void sm_fakelib_game_on_launch_failed(const char *title_id);
 // Bind pre-spawn mounts to the process, or mount as a NOTE_EXEC fallback.

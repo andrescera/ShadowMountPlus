@@ -1139,7 +1139,7 @@ static void *game_lifecycle_watcher_main(void *arg) {
         if (g_pending_game_exit.active)
           finalize_pending_game_exit();
         suspended_game_pid = atomic_load(&g_active_game_pid);
-        char suspended_game_title_id[MAX_TITLE_ID];
+        char suspended_game_title_id[MAX_TITLE_ID] = {0};
         bool active_game = snapshot_active_game(suspended_game_pid,
                                                 suspended_game_title_id);
         char source_path[MAX_PATH];
@@ -1178,8 +1178,10 @@ static void *game_lifecycle_watcher_main(void *arg) {
               kq, usb_game);
         }
         // The wait can process another game exit. Check the retained session
-        // afterwards and release only USB aliases before USB source cleanup.
-        if (!sm_fakelib_game_set_usb_suspended(true))
+        // afterwards and release removable aliases before USB source cleanup.
+        if (!sm_fakelib_game_set_storage_suspended(
+                true, suspended_game_pid,
+                active_game ? suspended_game_title_id : NULL))
           sleep_cleanup_complete = false;
         if (sleep_cleanup_complete) {
           runtime_mount_state_lock();
@@ -1219,7 +1221,13 @@ static void *game_lifecycle_watcher_main(void *arg) {
           is_process_alive(suspended_game_pid)) {
         handle_game_exec(kq, suspended_game_pid);
       }
-      (void)sm_fakelib_game_set_usb_suspended(false);
+      pid_t resume_pid = atomic_load(&g_active_game_pid);
+      char resume_title[MAX_TITLE_ID];
+      const char *resume_title_ptr = NULL;
+      if (resume_pid > 0 && snapshot_active_game(resume_pid, resume_title))
+        resume_title_ptr = resume_title;
+      (void)sm_fakelib_game_set_storage_suspended(
+          false, resume_pid, resume_title_ptr);
       suspended_game_pid = 0;
     }
 
