@@ -2330,8 +2330,9 @@ bool sm_fakelib_game_set_storage_suspended(bool suspended, pid_t pid,
     sync_errno = errno != 0 ? errno : EIO;
     schedule_storage_refresh();
   }
-  // Exit or rollback can leave a busy core layer after removing every USB
-  // alias. Its retained dependencies must still block USB source cleanup.
+  // Cleanup or rollback can leave an active session incomplete after removing
+  // removable aliases. Report this state for both phases; on suspend, the
+  // result must still block USB source cleanup.
   if (sync_errno == 0 && fakelib_session_active() &&
       !g_fakelib_mount.mounts_ready)
     sync_errno = EBUSY;
