@@ -114,6 +114,11 @@ bool sm_fakelib_game_feature_enabled(void) {
   return runtime_config().backport_fakelib_enabled;
 }
 
+static bool path_is_mount_point(const char *path) {
+  struct statfs fs;
+  return statfs(path, &fs) == 0 && strcmp(fs.f_mntonname, path) == 0;
+}
+
 static bool mount_sandbox_layer(const char *title_id,
                                 const char *source_path,
                                 const char *mount_path,
@@ -325,6 +330,14 @@ static bool mount_sandbox_directory(const char *title_id,
       errno = ENOTDIR;
       return false;
     }
+  }
+
+  // ShellCore mounts /user/data at the sandbox's /data. Treat that mount as
+  // the layer: a second nullfs over it is what fails with EBUSY or EDEADLK.
+  if (strcmp(source_path, "/data") == 0 && path_is_mount_point(mount_path)) {
+    log_debug("  [FAKELIB] directory already mounted for %s: %s", title_id,
+              mount_path);
+    return true;
   }
 
   size_t previous_count = g_fakelib_mount.layer_count;
